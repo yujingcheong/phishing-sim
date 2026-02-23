@@ -12,6 +12,7 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, redirect, render_template_string, jsonify, session
+from sqlalchemy.orm import joinedload
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
@@ -25,9 +26,14 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-# Ensure tables exist whether running via gunicorn or directly
-with app.app_context():
-    db.create_all()
+_db_initialised = False
+
+@app.before_request
+def init_db():
+    global _db_initialised
+    if not _db_initialised:
+        db.create_all()
+        _db_initialised = True
 
 # ─────────────────────────────────────────────
 # MODELS
@@ -419,7 +425,7 @@ def dashboard():
         "submit_rate": round(submitted / total * 100, 1) if total else 0,
     }
 
-    recent = Target.query.order_by(Target.clicked_at.desc().nullslast()).limit(50).all()
+    recent = Target.query.options(joinedload(Target.campaign)).order_by(Target.clicked_at.desc().nullslast()).limit(50).all()
     return render_template_string(DASHBOARD_HTML, stats=stats, campaigns=campaigns, recent=recent, message=request.args.get("msg"))
 
 @app.route("/admin/campaign/new")
@@ -540,7 +546,7 @@ def export_report():
 
 if __name__ == "__main__":
     with app.app_context():
-        db.create_all()
+        db.create_all()  # also initialise synchronously for direct runs
     
     # Support both local development and production deployment
     port = int(os.getenv("PORT", 5000))
