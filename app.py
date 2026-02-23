@@ -377,10 +377,9 @@ NEW_CAMPAIGN_HTML = """
   <div class="hint">⚠️ For Gmail: Use your FULL email address (e.g., yourname@gmail.com)</div>
 
   <label>SMTP Password (Gmail App Password)</label>
-  <input type="password" name="smtp_pass" placeholder="16-character app password">
-  <div class="hint" style="color:#e74c3c">⚠️ <strong>For Gmail:</strong> You MUST use an App Password, NOT your regular Gmail password.<br>
-  Generate one at: <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a><br>
-  Enter the 16 characters without spaces (e.g., abcdefghijklmnop)</div>
+  <input type="password" name="smtp_pass" placeholder="16-character app password (used only for local/SMTP mode)">
+  <div class="hint" style="color:#e74c3c">⚠️ <strong>For Gmail SMTP (local only):</strong> Use a 16-character App Password from <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>.<br>
+  <strong>On Render (production):</strong> Set the <code>SENDGRID_API_KEY</code> environment variable — SMTP fields are ignored and SendGrid is used instead.</div>
 
   <label>Tracking Base URL</label>
   <input type="text" name="base_url" placeholder="http://your-server-ip:5000" required>
@@ -470,35 +469,60 @@ def create_campaign():
     def send_emails_background():
         with app.app_context():
             try:
-                # Try STARTTLS (port 587) first, fallback to SSL (port 465)
-                print(f"[SMTP] Connecting to {smtp_host}:{smtp_port} as {smtp_user}")
-                if smtp_port == 465:
-                    ctx = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+                sg_key = os.getenv("SENDGRID_API_KEY", "")
+                if sg_key:
+                    # ── SendGrid HTTP API (works on Render free tier) ──
+                    import sendgrid as sg_module
+                    from sendgrid.helpers.mail import Mail
+                    sg_client = sg_module.SendGridAPIClient(sg_key)
+                    print(f"[EMAIL] Using SendGrid, sending to {len(target_ids)} targets")
+                    for tid in target_ids:
+                        t = db.session.get(Target, tid)
+                        if t is None:
+                            continue
+                        link = f"{base_url}/click/{t.token}"
+                        body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
+                        mail = Mail(
+                            from_email=f'{template["sender_name"]} <{sender_email}>',
+                            to_emails=t.email,
+                            subject=template["subject"],
+                            html_content=body,
+                        )
+                        response = sg_client.send(mail)
+                        print(f"[EMAIL] SendGrid → {t.email}: HTTP {response.status_code}")
+                        t.sent_at = datetime.utcnow()
+                    db.session.commit()
+                    print("[EMAIL] All emails dispatched via SendGrid")
                 else:
-                    ctx = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
-                    ctx.starttls()
-                ctx.login(smtp_user, smtp_pass)
-                print(f"[SMTP] Login successful, sending to {len(target_ids)} targets")
-                for tid in target_ids:
-                    t = db.session.get(Target, tid)
-                    if t is None:
-                        continue
-                    link = f"{base_url}/click/{t.token}"
-                    body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
-                    msg = MIMEMultipart("alternative")
-                    msg["Subject"] = template["subject"]
-                    msg["From"] = f'{template["sender_name"]} <{sender_email}>'
-                    msg["To"] = t.email
-                    msg.attach(MIMEText(body, "html"))
-                    ctx.sendmail(sender_email, t.email, msg.as_string())
-                    t.sent_at = datetime.utcnow()
-                    print(f"[SMTP] Sent to {t.email}")
-                ctx.quit()
-                db.session.commit()
-                print(f"[SMTP] All emails sent successfully")
+                    # ── SMTP fallback (localhost / non-Render) ──
+                    print(f"[SMTP] Connecting to {smtp_host}:{smtp_port} as {smtp_user}")
+                    if smtp_port == 465:
+                        ctx = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+                    else:
+                        ctx = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+                        ctx.starttls()
+                    ctx.login(smtp_user, smtp_pass)
+                    print(f"[SMTP] Login OK, sending to {len(target_ids)} targets")
+                    for tid in target_ids:
+                        t = db.session.get(Target, tid)
+                        if t is None:
+                            continue
+                        link = f"{base_url}/click/{t.token}"
+                        body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
+                        msg = MIMEMultipart("alternative")
+                        msg["Subject"] = template["subject"]
+                        msg["From"] = f'{template["sender_name"]} <{sender_email}>'
+                        msg["To"] = t.email
+                        msg.attach(MIMEText(body, "html"))
+                        ctx.sendmail(sender_email, t.email, msg.as_string())
+                        t.sent_at = datetime.utcnow()
+                        print(f"[SMTP] Sent to {t.email}")
+                    ctx.quit()
+                    db.session.commit()
+                    print("[SMTP] All emails sent")
             except Exception as e:
                 import traceback
-                print(f"[SMTP ERROR] {type(e).__name__}: {e}")
+                print(f"[EMAIL ERROR] {type(e).__name__}: {e}")
                 print(traceback.format_exc())
 
     threading.Thread(target=send_emails_background, daemon=True).start()
