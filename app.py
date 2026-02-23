@@ -379,7 +379,7 @@ NEW_CAMPAIGN_HTML = """
   <label>SMTP Password (Gmail App Password)</label>
   <input type="password" name="smtp_pass" placeholder="16-character app password (used only for local/SMTP mode)">
   <div class="hint" style="color:#e74c3c">⚠️ <strong>For Gmail SMTP (local only):</strong> Use a 16-character App Password from <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a>.<br>
-  <strong>On Render (production):</strong> Set the <code>SENDGRID_API_KEY</code> environment variable — SMTP fields are ignored and SendGrid is used instead.</div>
+  <strong>On Render (production):</strong> Set the <code>BREVO_API_KEY</code> environment variable — SMTP fields are ignored and Brevo is used instead.</div>
 
   <label>Tracking Base URL</label>
   <input type="text" name="base_url" placeholder="http://your-server-ip:5000" required>
@@ -470,7 +470,35 @@ def create_campaign():
         with app.app_context():
             try:
                 sg_key = os.getenv("SENDGRID_API_KEY", "")
-                if sg_key:
+                brevo_key = os.getenv("BREVO_API_KEY", "")
+                if brevo_key:
+                    # ── Brevo HTTP API (works on Render free tier, 300/day free) ──
+                    import requests as req_lib
+                    print(f"[EMAIL] Using Brevo, sending to {len(target_ids)} targets")
+                    for tid in target_ids:
+                        t = db.session.get(Target, tid)
+                        if t is None:
+                            continue
+                        link = f"{base_url}/click/{t.token}"
+                        body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
+                        payload = {
+                            "sender": {"name": template["sender_name"], "email": sender_email},
+                            "to": [{"email": t.email, "name": t.name or t.email}],
+                            "subject": template["subject"],
+                            "htmlContent": body,
+                        }
+                        resp = req_lib.post(
+                            "https://api.brevo.com/v3/smtp/email",
+                            headers={"api-key": brevo_key, "content-type": "application/json"},
+                            json=payload,
+                            timeout=20,
+                        )
+                        print(f"[EMAIL] Brevo → {t.email}: HTTP {resp.status_code} {resp.text[:120]}")
+                        if resp.status_code in (200, 201):
+                            t.sent_at = datetime.utcnow()
+                    db.session.commit()
+                    print("[EMAIL] All emails dispatched via Brevo")
+                elif sg_key:
                     # ── SendGrid HTTP API (works on Render free tier) ──
                     import sendgrid as sg_module
                     from sendgrid.helpers.mail import Mail
