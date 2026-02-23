@@ -470,25 +470,36 @@ def create_campaign():
     def send_emails_background():
         with app.app_context():
             try:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
-                    smtp.starttls()
-                    smtp.login(smtp_user, smtp_pass)
-                    for tid in target_ids:
-                        t = Target.query.get(tid)
-                        if t is None:
-                            continue
-                        link = f"{base_url}/click/{t.token}"
-                        body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
-                        msg = MIMEMultipart("alternative")
-                        msg["Subject"] = template["subject"]
-                        msg["From"] = f'{template["sender_name"]} <{sender_email}>'
-                        msg["To"] = t.email
-                        msg.attach(MIMEText(body, "html"))
-                        smtp.sendmail(sender_email, t.email, msg.as_string())
-                        t.sent_at = datetime.utcnow()
-                    db.session.commit()
+                # Try STARTTLS (port 587) first, fallback to SSL (port 465)
+                print(f"[SMTP] Connecting to {smtp_host}:{smtp_port} as {smtp_user}")
+                if smtp_port == 465:
+                    ctx = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+                else:
+                    ctx = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+                    ctx.starttls()
+                ctx.login(smtp_user, smtp_pass)
+                print(f"[SMTP] Login successful, sending to {len(target_ids)} targets")
+                for tid in target_ids:
+                    t = db.session.get(Target, tid)
+                    if t is None:
+                        continue
+                    link = f"{base_url}/click/{t.token}"
+                    body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
+                    msg = MIMEMultipart("alternative")
+                    msg["Subject"] = template["subject"]
+                    msg["From"] = f'{template["sender_name"]} <{sender_email}>'
+                    msg["To"] = t.email
+                    msg.attach(MIMEText(body, "html"))
+                    ctx.sendmail(sender_email, t.email, msg.as_string())
+                    t.sent_at = datetime.utcnow()
+                    print(f"[SMTP] Sent to {t.email}")
+                ctx.quit()
+                db.session.commit()
+                print(f"[SMTP] All emails sent successfully")
             except Exception as e:
-                print(f"[SMTP ERROR] {e}")
+                import traceback
+                print(f"[SMTP ERROR] {type(e).__name__}: {e}")
+                print(traceback.format_exc())
 
     threading.Thread(target=send_emails_background, daemon=True).start()
     return redirect(f"/?msg=Campaign+launched!+Sending+{len(target_ids)}+emails+in+background.")
@@ -520,6 +531,30 @@ def report_phish(token):
         target.reported = True
         db.session.commit()
     return "<h2>Thank you for reporting! Your security team has been notified.</h2>"
+
+@app.route("/admin/test-smtp")
+def test_smtp():
+    """Quick SMTP connectivity test — returns result directly in browser."""
+    import traceback
+    host  = request.args.get("host", "smtp.gmail.com")
+    port  = int(request.args.get("port", 587))
+    user  = request.args.get("user", "")
+    pw    = request.args.get("pw", "")
+    if not user or not pw:
+        return ("<pre>Usage: /admin/test-smtp?host=smtp.gmail.com&port=587"
+                "&user=you@gmail.com&pw=apppassword</pre>")
+    try:
+        if port == 465:
+            s = smtplib.SMTP_SSL(host, port, timeout=15)
+        else:
+            s = smtplib.SMTP(host, port, timeout=15)
+            s.starttls()
+        s.login(user, pw)
+        s.quit()
+        return f"<pre style='color:green'>SUCCESS: logged in as {user} via {host}:{port}</pre>"
+    except Exception as e:
+        return f"<pre style='color:red'>FAILED ({type(e).__name__}): {e}\n\n{traceback.format_exc()}</pre>"
+
 
 @app.route("/admin/report")
 def export_report():
