@@ -8,6 +8,7 @@ import uuid
 import smtplib
 import csv
 import json
+import threading
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -456,35 +457,41 @@ def create_campaign():
 
     db.session.commit()
 
-    # Send emails
-    template = EMAIL_TEMPLATES[data["template"]]
+    # Collect data needed by background thread (can't use request context in thread)
+    smtp_host = data["smtp_host"]
+    smtp_port = int(data["smtp_port"])
+    smtp_user = data["smtp_user"]
+    smtp_pass = data["smtp_pass"]
+    sender_email = data["sender_email"]
     base_url = data["base_url"].rstrip("/")
-    sent_count = 0
+    template = EMAIL_TEMPLATES[data["template"]]
+    target_ids = [t.id for t in targets]
 
-    try:
-        with smtplib.SMTP(data["smtp_host"], int(data["smtp_port"])) as smtp:
-            smtp.starttls()
-            smtp.login(data["smtp_user"], data["smtp_pass"])
+    def send_emails_background():
+        with app.app_context():
+            try:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
+                    smtp.starttls()
+                    smtp.login(smtp_user, smtp_pass)
+                    for tid in target_ids:
+                        t = Target.query.get(tid)
+                        if t is None:
+                            continue
+                        link = f"{base_url}/click/{t.token}"
+                        body = template["body_html"].replace("{name}", t.name or "Team Member").replace("{link}", link)
+                        msg = MIMEMultipart("alternative")
+                        msg["Subject"] = template["subject"]
+                        msg["From"] = f'{template["sender_name"]} <{sender_email}>'
+                        msg["To"] = t.email
+                        msg.attach(MIMEText(body, "html"))
+                        smtp.sendmail(sender_email, t.email, msg.as_string())
+                        t.sent_at = datetime.utcnow()
+                    db.session.commit()
+            except Exception as e:
+                print(f"[SMTP ERROR] {e}")
 
-            for target in targets:
-                link = f"{base_url}/click/{target.token}"
-                body = template["body_html"].replace("{name}", target.name or "Team Member").replace("{link}", link)
-
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = template["subject"]
-                msg["From"] = f'{template["sender_name"]} <{data["sender_email"]}>'
-                msg["To"] = target.email
-                msg.attach(MIMEText(body, "html"))
-
-                smtp.sendmail(data["sender_email"], target.email, msg.as_string())
-                target.sent_at = datetime.utcnow()
-                sent_count += 1
-
-        db.session.commit()
-    except Exception as e:
-        return f"<pre>SMTP Error: {e}</pre><br><a href='/'>Back</a>"
-
-    return redirect(f"/?msg=Campaign+launched!+Sent+{sent_count}+emails.")
+    threading.Thread(target=send_emails_background, daemon=True).start()
+    return redirect(f"/?msg=Campaign+launched!+Sending+{len(target_ids)}+emails+in+background.")
 
 @app.route("/click/<token>")
 def track_click(token):
