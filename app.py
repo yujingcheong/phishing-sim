@@ -25,6 +25,10 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
+# Ensure tables exist whether running via gunicorn or directly
+with app.app_context():
+    db.create_all()
+
 # ─────────────────────────────────────────────
 # MODELS
 # ─────────────────────────────────────────────
