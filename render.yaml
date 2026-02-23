@@ -9,3 +9,7 @@ services:
         generateValue: true
       - key: PYTHON_VERSION
         value: 3.12.0
+      - key: BREVO_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
