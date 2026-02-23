@@ -22,7 +22,13 @@ load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change-this-in-production")
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///phishing_sim.db"
+
+# Use DATABASE_URL (PostgreSQL on Render) or fall back to local SQLite
+_db_url = os.getenv("DATABASE_URL", "sqlite:///phishing_sim.db")
+# Render sets postgres:// but SQLAlchemy 1.4+ requires postgresql://
+if _db_url.startswith("postgres://"):
+    _db_url = _db_url.replace("postgres://", "postgresql://", 1)
+app.config["SQLALCHEMY_DATABASE_URI"] = _db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
