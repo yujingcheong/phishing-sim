@@ -369,8 +369,8 @@ NEW_CAMPAIGN_HTML = """
   <textarea name="targets" placeholder="john.doe@company.com, John Doe, Engineering&#10;jane.smith@company.com, Jane Smith, Finance&#10;bob@company.com"></textarea>
 
   <label>Sender Email (From address)</label>
-  <input type="email" name="sender_email" placeholder="itsupport@company-helpdesk.com" required>
-  <div class="hint">Use a domain you control for testing. Do NOT use your real company domain without authorization.</div>
+  <input type="email" name="sender_email" placeholder="yujingcheong@gmail.com" required>
+  <div class="hint" style="color:#e67e22">⚠️ <strong>Brevo requires a verified sender.</strong> Use the exact email you added as a verified sender in Brevo (Senders &amp; Domains → Senders). Using a fake or unverified address will silently fail or get your account flagged.</div>
 
   <label>SMTP Server</label>
   <input type="text" name="smtp_host" placeholder="smtp.gmail.com" value="smtp.gmail.com">
@@ -589,6 +589,35 @@ def report_phish(token):
         target.reported = True
         db.session.commit()
     return "<h2>Thank you for reporting! Your security team has been notified.</h2>"
+
+@app.route("/admin/test-email")
+def test_email():
+    """Test Brevo or SMTP connectivity directly in browser."""
+    import traceback, requests as req_lib
+    to_addr = request.args.get("to", "")
+    if not to_addr:
+        return "<pre>Usage: /admin/test-email?to=recipient@email.com</pre>"
+    brevo_key = os.getenv("BREVO_API_KEY", "")
+    sender_email = request.args.get("from", "yujingcheong@gmail.com")
+    if not brevo_key:
+        return "<pre style='color:red'>BREVO_API_KEY env var is not set on this server.</pre>"
+    try:
+        payload = {
+            "sender": {"name": "Test", "email": sender_email},
+            "to": [{"email": to_addr}],
+            "subject": "Phishing Sim – test email",
+            "htmlContent": "<p>This is a test from your phishing sim on Render.</p>",
+        }
+        resp = req_lib.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": brevo_key, "content-type": "application/json"},
+            json=payload, timeout=20,
+        )
+        color = "green" if resp.status_code in (200, 201) else "red"
+        return f"<pre style='color:{color}'>HTTP {resp.status_code}\n{resp.text}</pre>"
+    except Exception as e:
+        return f"<pre style='color:red'>{type(e).__name__}: {e}\n{traceback.format_exc()}</pre>"
+
 
 @app.route("/admin/test-smtp")
 def test_smtp():
